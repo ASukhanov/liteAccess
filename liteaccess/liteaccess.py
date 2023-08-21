@@ -1,6 +1,6 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.1.0 2023-07-26'# encoder=CBOR2
+__version__ = '3.1.1 2023-07-26'# fixed _firstValueAndTime
 
 import sys, time, socket
 from os import getpid
@@ -615,11 +615,9 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
         else:#except Exception as e:
             _printw('in _firstValueAndTime: '+str(e))
             return (None,)
-        # skip parameter key
-        firstValsTDict = list(firstValsTDict.values())[0]
-        ValsT = list(firstValsTDict.values())[:2]
-        try:     return (ValsT[0], ValsT[1])
-        except:  return (ValsT[0],)
+        t = firstValsTDict.get('timestamp')
+        v = firstValsTDict.get('value')
+        return v,t
 
     #``````````````Property 'value````````````````````````````````````````````
     # It is for frequently needed get/set access to a single parameter
