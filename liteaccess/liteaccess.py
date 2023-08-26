@@ -1,6 +1,6 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.1.1 2023-07-26'# fixed _firstValueAndTime
+__version__ = '3.1.2 2023-07-26'# fixed issue with PVS.set
 
 import sys, time, socket
 from os import getpid
@@ -9,7 +9,6 @@ from timeit import default_timer as _timer
 import threading
 recvLock = threading.Lock()
 receive_dictio_lock = threading.Lock()
-#from pprint import pformat, pprint
 
 # object encoding
 #import ubjson
@@ -63,9 +62,6 @@ def _croppedText(txt, limit=200):
         txt = txt[:limit]+'...'
     return txt
 
-def testCallbackPrint(args):
-    _printi(_croppedText(f'>testCallback({args})'))
-
 ReceiverStatistics = {'records':0, 'acks':0, 'bytes':0., 'retrans':0, 'time':0.}
 ReceiverStatisticsLast = ReceiverStatistics.copy()
 def testCallback(args):
@@ -96,7 +92,6 @@ def _hostPort(cnsNameDev:tuple):
     cnsName,dev = cnsNameDev
     if isinstance(cnsName,list):
         cnsName = tuple(cnsName)
-    # _printv(f'>_hostPort: {cnsNameDev}')
     try:  
         hp,dev = CNSMap[cnsName]# check if cnsName is in local map
     except  KeyError:
@@ -159,12 +154,8 @@ def _recvUdp(sock, socketSize):
         except socket.timeout as e:
             msg = f'Timeout in recvfrom port {port}'
             _printi(msg)
-            raise
             # Don not return, raise exception, otherwise the pypet will not recover
-            #_printw(msg)
-            #return [],0
-            #return ('WARNING: '+msg).encode(), 0
-            #buf = None
+            raise
         if buf is None:
             raise RuntimeError(msg)
         size = len(buf) - PrefixLength
@@ -257,11 +248,10 @@ def _send_dictio(dictio, sock, hostPort:tuple):
     """low level send"""
     global LastDictio
     LastDictio = dictio.copy()
-    _printv('executing: '+str(dictio))
     dictio['username'] = Username
     dictio['program'] = Program
     dictio['pid'] = PID
-    # _printv(f'send_dictio to {hostPort}: {dictio}')
+    _printv(f'send_dictio to {hostPort}: {dictio}')
     encoded = encoderDump(dictio)
     if UDP:
         sock.sendto(encoded, hostPort)
@@ -270,18 +260,17 @@ def _send_dictio(dictio, sock, hostPort:tuple):
 
 def _send_cmd(cmd, devParDict:dict, sock, hostPort:tuple, values=None):
     import copy
-    _printv(f'_send_cmd({cmd}.{devParDict} to {sock}')
+    #_printv(f'_send_cmd({cmd}.{devParDict} to {sock}')
+    dpd = devParDict
     if cmd == 'set':
         if len(devParDict) != 1:
             raise ValueError('Set is supported for single device only')
-        #devParDict = copy.deepcopy(devParDict)# that is IMPORTANT! otherwise setting in liteScaler.yaml is failing 
-        #for key,value in zip(devParDict,values):
-        #    devParDict[key] += 'v',value
-        for key in devParDict:
-            devParDict[key] += 'v',values
-    devParList = list(devParDict.items())
+        dpd = copy.deepcopy(devParDict)# that is IMPORTANT! 
+        for key in dpd:
+            dpd[key] += 'v',values
+    devParList = list(dpd.items())
     dictio = {'cmd':(cmd,devParList)}
-    _printv('sending cmd: '+str(dictio))
+    #_printv('sending cmd: '+str(dictio))
     _send_dictio(dictio, sock, hostPort)
 
 def _receive_dictio(sock, hostPort:tuple):
@@ -383,7 +372,6 @@ class SubscriptionSocket():
             self.socket = sock
         '''
         else:
-            
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             #sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             host,serverport = self.hostPort
@@ -478,8 +466,6 @@ subscriptionSockets = {}
 
 def _add_subscriber(hostPort:tuple, devParDict:dict, sock, callback=testCallback):
     subscriber = Subscriber(hostPort, devParDict, callback)
-    #self.subscribers[subscriber.name] = subscriber
-
     # register new socket if not registered yet
     subsSocket = subscriptionSockets.get(hostPort)
     if subsSocket is None:
@@ -502,7 +488,7 @@ class Channel():
     Perf = False
     """Provides access to host;port"""#[(dev1,[pars1]),(dev2,[pars2]),...]
     def __init__(self, hostPort:tuple, devParDict={}, timeout=10):
-        _printv(f'>Channel {hostPort,devParDict}')
+        #_printv(f'>Channel {hostPort,devParDict}')
         self.devParDict = devParDict
         host = hostPort[0]
         if host.lower() in ('','localhost'):
@@ -545,13 +531,13 @@ class Channel():
     def _transaction(self, cmd, value=None):
         # normal transaction: send command, receive response
         if Channel.Perf: ts = _timer()
-        #_printv(f'channel send to {self.sock}: {cmd,value}')
-        r = _send_cmd(cmd, self.devParDict, self.sock, self.hostPort, value)
-        r = _receive_dictio(self.sock, self.hostPort)
+        #print(f'channel send to {self.sock}: {self.devParDict}, {cmd,value}')
+        _send_cmd(cmd, self.devParDict, self.sock, self.hostPort, value)
+        r = True if cmd == 'set' else _receive_dictio(self.sock, self.hostPort)            
         if not UDP:
             self.sock.close()
         if Channel.Perf: print('transaction time: %.5f'%(_timer()-ts))
-        #_printv(f'reply from channel {self.name}: {r}')
+        #print(f'reply from channel {self.name}: {r}')
         return r
     
 class PVs(object): #inheritance from object is needed in python2 for properties to work
@@ -560,7 +546,7 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
     subscriptionsCancelled = True
 
     def __init__(self, *ldoPars):
-        # _printv(f'``````````````````Instantiating PVs ldoPars:{ldoPars}')        
+        _printv(f'``````````````````Instantiating PVs ldoPars:{ldoPars}')        
         # unpack arguments to hosRequest map
         self.channelMap = {}
         if isinstance(ldoPars[0], str):
@@ -573,13 +559,10 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
             try:    ldo = ldo.split(NSDelimiter)
             except: pass
             ldo = tuple(ldo)
-            # _printv(f'ldo,Pars:{ldo,pars}')
             if isinstance(pars,str): pars = [pars]
             # ldo is in form: (hostName,devName)
             ldoHost = _hostPort(ldo)
-            #cnsNameDev = ','.join(ldoPar[0])
             cnsNameDev = NSDelimiter.join(ldo)
-            #print('ldoHost,cnsNameDev',ldoHost,cnsNameDev)
             if ldoHost not in self.channelMap:
                 self.channelMap[ldoHost] = {cnsNameDev:[pars]}
                 # _printv(f'created self.channelMap[{ldoHost,self.channelMap[ldoHost]}')
@@ -593,7 +576,7 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
                 #print(('updated self.channelMap[%s]='%ldoHost\
                 #+ str(self.channelMap[ldoHost]))
         channelList = list(self.channelMap.items())
-        # _printv(f',,,,,,,,,,,,,,,,,,,channelList constructed: {channelList}')
+        _printv(f',,,,,,,,,,,,,,,,,,,channelList constructed: {channelList}')
         self.channels = [Channel(*i) for i in channelList]
         return
 
@@ -602,17 +585,16 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
             return channel._transaction('info')
 
     def get(self):
-        
         for channel in self.channels:
             return channel._transaction('get')
 
     def _firstValueAndTime(self):
-        if True:#try: skip 'server,device'
+        try:
             firstDict = self.channels[0]._transaction('get')
             if not isinstance(firstDict,dict):
                 return firstDict
             firstValsTDict = list(firstDict.values())[0]
-        else:#except Exception as e:
+        except Exception as e:
             _printw('in _firstValueAndTime: '+str(e))
             return (None,)
         t = firstValsTDict.get('timestamp')
@@ -642,6 +624,7 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
         #for channel in self.channels:
         #TODO: the set is not supported yet for multiple objects
         for channel in self.channels[:1]:
+            _printv(f'set {channel.devParDict} {value}')
             r = channel._transaction('set',value)
             if isinstance(r,str):
                 raise RuntimeError(r)
@@ -694,6 +677,6 @@ class Access():
         pvs.subscribe(callback)
 
     def unsubscribe():
-        '''Unsubscribe all paramters'''
+        """Unsubscribe all paramters"""
         unsubscribe_all()
 #,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
