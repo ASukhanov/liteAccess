@@ -1,6 +1,6 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.1.2 2023-07-26'# fixed issue with PVS.set
+__version__ = '3.1.3 2023-09-09'# error handling in case of wrong naming.
 
 import sys, time, socket
 from os import getpid
@@ -87,8 +87,9 @@ def _hostPort(cnsNameDev:tuple):
     registered records, or from the name service"""
     global CNSMap
     if len(cnsNameDev) == 1:
-        _printe(f'Device name wrong: {cnsNameDev}, should be of the form: host:dev')
-        sys.exit(1)
+        msg = f'Device name should be a tuple (dev,name), got: {cnsNameDev}'
+        #_printe(msg)
+        raise NameError(msg)
     cnsName,dev = cnsNameDev
     if isinstance(cnsName,list):
         cnsName = tuple(cnsName)
@@ -113,8 +114,9 @@ def _hostPort(cnsNameDev:tuple):
         CNSMap[cnsName] = hp,dev
         _printi(f'Assuming host,port: {hp}')
     except ValueError:
-        _printe(f'Device name {cnsName} wrong, it should be in form host:device ')
-        sys.exit(1)
+        msg = f'Device name wrong: {cnsNameDev}, should be of the form: host:dev'
+        #_printe(msg)
+        raise NameError(msg)
     h,p = hp
     try:
         h = socket.gethostbyname(h)
