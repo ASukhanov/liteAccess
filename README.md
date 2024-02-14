@@ -12,27 +12,30 @@ LAdev1   = Host+':dev1'
 LAdev2   = Host+':dev2'
 
 #``````````````````Simplified programmatic way`````````````````````````````````
-LA.Access.info((Host+':*','*'))# map of all devices and parameters the Host
-LA.Access.info((LAserver,'*'))
-LA.Access.get((LAserver,'*'))
+LA.Access.info([Host+':*'])# list of all devices and parameters, hosted by Host
+LA.Access.info([LAserver])# Info of all parameters of the server
+LA.Access.get([LAserver])# get values of all parameters of the server
+LA.Access.get([LAserver,'*','desc'])# get descriptions of all parameters of the server
 
 # The commands below assume that the liteScaler server is running on the same host.
-LA.Access.set((LAdev1,'frequency',2.0))
+LA.Access.get([LAdev1,['frequency']]) or LA.Access.get([LAdev1,'frequency'])
+LA.Access.get([LAdev1,['frequency'],'desc'])# get parameter property 'desc'
+LA.Access.set([LAdev1,['frequency'],1.1])
 # subscription example:
 def testCallback(*args): print(f'callback args: {args}')
-LA.Access.subscribe(testCallback,(LAdev1,'cycle'))
+LA.Access.subscribe(testCallback,[LAdev1,'cycle'])
 LA.Access.unsubscribe()
 #,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 #``````````````````Object-oriented way`````````````````````````````````````````
 # Advantage: The previuosly created PVs are reused.
-allServerParameters = LA.PVs((LAserver,'*'))
+allServerParameters = LA.PVs([LAserver])
 pprint(allServerParameters.info())
 pprint(allServerParameters.get())# get all parameters from device LAserver
 # get all readable parameters from device Scaler1:server, which have been 
-# modified since the last read:
+# modified since last read:
 pprint(allServerParameters.read())
 
-allDev1Parameters = LA.PVs((LAdev1,'*'))
+allDev1Parameters = LA.PVs([LAdev1])
 pprint(allDev1Parameters.info())
 
 server_performance = LA.PVs((LAserver,'perf'))
@@ -41,11 +44,11 @@ pprint(server_performance.get())
 # simplified get: returns (value,timestamp) of a parameter 'perf' 
 pprint(server_performance.value)
 
-server_multiple_parameters = LA.PVs((LAserver,('perf','run')))
+server_multiple_parameters = LA.PVs([LAserver,['perf','run']])
 pprint(server_multiple_parameters.info())
 pprint(server_multiple_parameters.get())
 
-server_multiple_devPars = LA.PVs((LAdev1,('time','frequency')),(LAserver,('statistics','perf')))
+server_multiple_devPars = LA.PVs((LAdev1,['time','frequency']),(LAserver,['statistics','perf']))
 pprint(server_multiple_devPars.get())
 
 # setting
@@ -70,6 +73,8 @@ Timing of Access.get using ipython on localhost.
     LAdev1   = Host+':dev1'
     %timeit image = LA.Access.get((LAdev1,['image']))
     145 µs ± 1.95 µs per loop (mean ± std. dev. of 7 runs, 10000 loops each)
+    for version 3.2.0:
+    317 µs ± 5.53 µs per loop (mean ± std. dev. of 7 runs, 1,000 loops each)
     image[(LAdev1,'image')]['value'].shape
     (120, 160, 3)
 Retrieving time of 57600 values (120*160*3) is 145 µs,

@@ -1,6 +1,6 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.1.3 2023-09-09'# error handling in case of wrong naming.
+__version__ = '3.2.0 2024-02-13'# Fixed: get parameter properties. set() returns dict
 
 import sys, time, socket
 from os import getpid
@@ -316,7 +316,7 @@ def _receive_dictio(sock, hostPort:tuple):
     try:
         decoded = encoderLoad(data)
     except Exception as e:
-        _printw(f'exception in ubjson.load Data[{len(data)}]: {e}')
+        _printw(f'exception in encoder.load Data[{len(data)}]: {e}')
         #print(str(data)[:150])
         #raise ValueError('in _receive_dictio: '+msg)
         return {}
@@ -535,7 +535,8 @@ class Channel():
         if Channel.Perf: ts = _timer()
         #print(f'channel send to {self.sock}: {self.devParDict}, {cmd,value}')
         _send_cmd(cmd, self.devParDict, self.sock, self.hostPort, value)
-        r = True if cmd == 'set' else _receive_dictio(self.sock, self.hostPort)            
+        #r = True if cmd == 'set' else _receive_dictio(self.sock, self.hostPort)
+        r = _receive_dictio(self.sock, self.hostPort)
         if not UDP:
             self.sock.close()
         if Channel.Perf: print('transaction time: %.5f'%(_timer()-ts))
@@ -557,26 +558,31 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
             sys.exit(1)
         for ldoPar in ldoPars:
             ldo = ldoPar[0]
-            pars = ldoPar[1] if len(ldoPar) > 1 else ''
+            if len(ldoPar) == 1:
+                pars = '*'
+            else:
+                if isinstance(ldoPar[1],str):
+                    ldoPar = list(ldoPar)
+                    ldoPar[1] = [ldoPar[1]]
+                pars = ldoPar[1:]
             try:    ldo = ldo.split(NSDelimiter)
             except: pass
             ldo = tuple(ldo)
-            if isinstance(pars,str): pars = [pars]
+            #if isinstance(pars,str): pars = [[pars]]
             # ldo is in form: (hostName,devName)
             ldoHost = _hostPort(ldo)
             cnsNameDev = NSDelimiter.join(ldo)
             if ldoHost not in self.channelMap:
-                self.channelMap[ldoHost] = {cnsNameDev:[pars]}
-                # _printv(f'created self.channelMap[{ldoHost,self.channelMap[ldoHost]}')
+                self.channelMap[ldoHost] = {cnsNameDev:pars}
+                #_printv(f'created self.channelMap[{ldoHost,self.channelMap[ldoHost]}')
             else:
-                try:
-                    # _printv(f'appending old cnsNameDev {ldoHost,cnsNameDev} with {pars[0]}')
+                if False:#try:
+                    _printv(f'try to append old cnsNameDev {ldoHost,cnsNameDev} with {pars[0]}')
                     self.channelMap[ldoHost][cnsNameDev][0].append(pars[0])
-                except:
-                    # _printv(f'creating new cnsNameDev {ldoHost,cnsNameDev} with {pars[0]}')
-                    self.channelMap[ldoHost][cnsNameDev] = [pars]
-                #print(('updated self.channelMap[%s]='%ldoHost\
-                #+ str(self.channelMap[ldoHost]))
+                else:#except:
+                    _printv(f'creating new cnsNameDev {ldoHost,cnsNameDev} with {pars[0]}')
+                    self.channelMap[ldoHost][cnsNameDev] = pars
+                print(f'updated self.channelMap[{ldoHost}: {self.channelMap[ldoHost]}')
         channelList = list(self.channelMap.items())
         _printv(f',,,,,,,,,,,,,,,,,,,channelList constructed: {channelList}')
         self.channels = [Channel(*i) for i in channelList]
