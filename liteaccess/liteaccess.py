@@ -1,13 +1,13 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.2.0 2024-02-13'# Fixed: get parameter properties. set() returns dict
+__version__ = '3.2.1 2024-02-27'# prevent locking with receive_dictio_lock, proper handling of Timeout in recvfrom
 
 import sys, time, socket
 from os import getpid
 import getpass
 from timeit import default_timer as _timer
 import threading
-recvLock = threading.Lock()
+#recvLock = threading.Lock()
 receive_dictio_lock = threading.Lock()
 
 # object encoding
@@ -128,7 +128,7 @@ def _hostPort(cnsNameDev:tuple):
 retransmitInProgress = None
 def _recvUdp(sock, socketSize):
     """Receive the chopped UDP data"""
-    port = sock.getsockname()[1]
+    sockAddr,port = sock.getsockname()
     #print(f'>_recvUdp {port} locked: {recvLock.locked()}')
     #with recvLock:
     global retransmitInProgress
@@ -154,10 +154,10 @@ def _recvUdp(sock, socketSize):
             
         #else:#except Exception as e:
         except socket.timeout as e:
-            msg = f'Timeout in recvfrom port {port}'
-            _printi(msg)
+            msg = f'Timeout in recvfrom {sockAddr,port}'
+            #_printi(msg)
             # Don not return, raise exception, otherwise the pypet will not recover
-            raise
+            raise TimeoutError(msg)
         if buf is None:
             raise RuntimeError(msg)
         size = len(buf) - PrefixLength
@@ -277,6 +277,9 @@ def _send_cmd(cmd, devParDict:dict, sock, hostPort:tuple, values=None):
 
 def _receive_dictio(sock, hostPort:tuple):
   """Receive and decode message from associated socket"""
+  if receive_dictio_lock.locked():
+      #print('receive_dictio locked')
+      return {}
   with receive_dictio_lock:
     # _printv('\n>receive_dictio')
     if UDP:
@@ -403,8 +406,8 @@ class SubscriptionSocket():
                 _printv(f'>subscription receive_dict {self.socket}')
                 try:
                     dictio = _receive_dictio(self.socket, self.hostPort)
-                except Exception as e:
-                    _printe(f'Exception in subscription thread: {e}')
+                except TimeoutError as e:
+                    _printw(f'Timeout in subscription thread: {e}')
                     continue
             #except socket.timeout as e:
             #except RuntimeError as e:
