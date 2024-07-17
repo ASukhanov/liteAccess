@@ -1,11 +1,11 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.2.1 2024-02-27'# prevent locking with receive_dictio_lock, proper handling of Timeout in recvfrom
+__version__ = '3.2.2 2024-07-16'# Bug fixed with receive_dictio_lock. Set returns replies from all channels or raises RuntimeError, Dbg is integer
 
 import sys, time, socket
 from os import getpid
 import getpass
-from timeit import default_timer as _timer
+_timer = time.perf_counter
 import threading
 #recvLock = threading.Lock()
 receive_dictio_lock = threading.Lock()
@@ -55,7 +55,9 @@ def _printe(msg):
     #Device.setServerStatusText(msg)
 
 def _printv(msg):
-    if PVs.Dbg or Access.Dbg : print('Dbg.LA: '+msg)
+    if PVs.Dbg > 0: print('Dbg0.LA: '+msg)
+def _printvv(msg):
+    if PVs.Dbg > 1: print('Dbg1.LA: '+msg)
 
 def _croppedText(txt, limit=200):
     if len(txt) > limit:
@@ -152,10 +154,8 @@ def _recvUdp(sock, socketSize):
             ReceiverStatistics["bytes"] += len(buf)
             ReceiverStatistics["time"] = time.time()
             
-        #else:#except Exception as e:
         except socket.timeout as e:
             msg = f'Timeout in recvfrom {sockAddr,port}'
-            #_printi(msg)
             # Don not return, raise exception, otherwise the pypet will not recover
             raise TimeoutError(msg)
         if buf is None:
@@ -278,10 +278,8 @@ def _send_cmd(cmd, devParDict:dict, sock, hostPort:tuple, values=None):
 def _receive_dictio(sock, hostPort:tuple):
   """Receive and decode message from associated socket"""
   if receive_dictio_lock.locked():
-      #print('receive_dictio locked')
-      return {}
+      _printv('receive_dictio locked')
   with receive_dictio_lock:
-    # _printv('\n>receive_dictio')
     if UDP:
         data, addr = _recvUdp(sock, socketSize)
         # acknowledge the receiving
@@ -297,7 +295,7 @@ def _receive_dictio(sock, hostPort:tuple):
             #self.sock.sendto(b'ACK', self.hostPort)
             #_printv('ACK2 sent to '+str(self.hostPort))
     else:
-        print(f'>recv timeout:{sock.gettimeout()} `{sock}`')
+        #print(f'>recv timeout:{sock.gettimeout()} `{sock}`')
         if True:#try:
             data = sock.recv(socketSize)
             if len(data) == 0:
@@ -309,7 +307,7 @@ def _receive_dictio(sock, hostPort:tuple):
             _printw('in sock.recv:'+str(e))
             return {}
 
-    #print('received %i bytes'%(len(data)))
+    _printv('received %i bytes'%(len(data)))
     #_printv('received %i of '%len(data)+str(type(data))+' from '+str(addr)':')
     # decode received data
     # allow exception here, it will be caught in execute_cmd
@@ -355,6 +353,7 @@ def _receive_dictio(sock, hostPort:tuple):
             #print(f'not numpy {parName}')
             pass
     #print(f'\ndecoded: {parDict}')
+    #print('<receive_dictio')
     return parDict
 
 class Subscriber():
@@ -535,24 +534,23 @@ class Channel():
 
     def _transaction(self, cmd, value=None):
         # normal transaction: send command, receive response
-        if Channel.Perf: ts = _timer()
-        #print(f'channel send to {self.sock}: {self.devParDict}, {cmd,value}')
+        if Channel.Perf:
+            ts = _timer()
         _send_cmd(cmd, self.devParDict, self.sock, self.hostPort, value)
         #r = True if cmd == 'set' else _receive_dictio(self.sock, self.hostPort)
         r = _receive_dictio(self.sock, self.hostPort)
         if not UDP:
             self.sock.close()
         if Channel.Perf: print('transaction time: %.5f'%(_timer()-ts))
-        #print(f'reply from channel {self.name}: {r}')
         return r
     
 class PVs(object): #inheritance from object is needed in python2 for properties to work
     """Class, representing multiple data access objects."""
-    Dbg = False
+    Dbg = 0
     subscriptionsCancelled = True
+    #Cache = {}
 
     def __init__(self, *ldoPars):
-        _printv(f'``````````````````Instantiating PVs ldoPars:{ldoPars}')        
         # unpack arguments to hosRequest map
         self.channelMap = {}
         if isinstance(ldoPars[0], str):
@@ -560,6 +558,9 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
             return
             sys.exit(1)
         for ldoPar in ldoPars:
+            #if ldoPar in PVs.Cache:
+            #    _printv(f'ldoPar {ldoPar} is already exist')
+            _printv(f'``````````````````Instantiating PVs ldoPar:{ldoPar}')
             ldo = ldoPar[0]
             if len(ldoPar) == 1:
                 pars = '*'
@@ -632,13 +633,16 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
             return channel._transaction('read')
 
     def set(self,value):
-        #for channel in self.channels:
-        #TODO: the set is not supported yet for multiple objects
+        """On normal completion returns replies from channels.
+        On error - raises RuntimeError."""
+        r = {}
         for channel in self.channels[:1]:
-            _printv(f'set {channel.devParDict} {value}')
-            r = channel._transaction('set',value)
-            if isinstance(r,str):
-                raise RuntimeError(r)
+            _printv(f'>set {channel.devParDict} {value}')
+            reply = channel._transaction('set',value)
+            _printv(f'<set: {reply}')
+            if isinstance(reply,str):
+                raise RuntimeError(reply)
+            r.update(reply)
         return r
 
     #``````````````subscription ``````````````````````````````````````````````
@@ -665,8 +669,10 @@ class Access():
     """
     _Subscriptions = []
     __version__ = __version__
-    Dbg = False
     dbgDrop_Ack = 0# Debugging. Number of ACK to drop.
+
+    def set_dbg(dbg):
+        PVs.Dbg = dbg
 
     def info(*devParNames):
         return PVs(*devParNames).info()
@@ -674,10 +680,9 @@ class Access():
     def get(*devParNames, **kwargs):# kwargs are for compatibility with older versions
         return PVs(*devParNames).get()
 
-    def set(devPar_Value):
-        #Only one object supported so far
-        dev,par,value = devPar_Value
-        return PVs((dev,par)).set(value)
+    def set(dev_pars_values):
+        dev,pars,values = dev_pars_values
+        return PVs((dev,pars)).set(values)
 
     def subscribe(callback, *devParNames):
         if not callable(callback):

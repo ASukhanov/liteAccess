@@ -17,10 +17,10 @@ LA.Access.info([LAserver])# Info of all parameters of the server
 LA.Access.get([LAserver])# get values of all parameters of the server
 LA.Access.get([LAserver,'*','desc'])# get descriptions of all parameters of the server
 
-# The commands below assume that the liteScaler server is running on the same host.
-LA.Access.get([LAdev1,['frequency']]) or LA.Access.get([LAdev1,'frequency'])
-LA.Access.get([LAdev1,['frequency'],'desc'])# get parameter property 'desc'
-LA.Access.set([LAdev1,['frequency'],1.1])
+# The commands below assumes that the liteScaler server is running on the same host.
+LA.Access.get([LAdev1,'frequency'])
+LA.Access.get([LAdev1,('frequency','number'),'desc'])# get parameter property 'desc' for multiple parameters
+LA.Access.set([LAdev1,('frequency','number'),(2.2, 9.2)])# set values of multiple parameters
 # subscription example:
 def testCallback(*args): print(f'callback args: {args}')
 LA.Access.subscribe(testCallback,[LAdev1,'cycle'])
@@ -44,7 +44,7 @@ pprint(server_performance.get())
 # simplified get: returns (value,timestamp) of a parameter 'perf' 
 pprint(server_performance.value)
 
-server_multiple_parameters = LA.PVs([LAserver,['perf','run']])
+server_multiple_parameters = LA.PVs([LAserver,('perf','run')])
 pprint(server_multiple_parameters.info())
 pprint(server_multiple_parameters.get())
 
