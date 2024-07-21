@@ -1,13 +1,14 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.2.2 2024-07-16'# Bug fixed with receive_dictio_lock. Set returns replies from all channels or raises RuntimeError, Dbg is integer
+__version__ = '3.3.0 2024-07-19'#receive_dictio split in two parts
+#TODO: Right now the nonblocked _receive_socket is called from subscribtion thread and from channel.transaction(). Are they thread safe? 
+#TODO: Recover from timeout. It is tricky. The timeout could be due to slow or stopped server, in that case do not recover.
 
 import sys, time, socket
 from os import getpid
 import getpass
 _timer = time.perf_counter
 import threading
-#recvLock = threading.Lock()
 receive_dictio_lock = threading.Lock()
 
 # object encoding
@@ -20,10 +21,9 @@ encoderDump = encoder.dumps
 encoderLoad = encoder.loads
 
 #````````````````````````````Globals``````````````````````````````````````````
-UDP = True
 Port = 9700
 PrefixLength = 4
-socketSize = 1024*64 # max size of UDP transfer
+SocketSize = 1024*64 # max size of UDP transfer
 Dev,Par = 0,1
 NSDelimiter = ':'# delimiter in the name field
 
@@ -128,7 +128,7 @@ def _hostPort(cnsNameDev:tuple):
     return h,p
 
 retransmitInProgress = None
-def _recvUdp(sock, socketSize):
+def _recvUdp(sock):
     """Receive the chopped UDP data"""
     sockAddr,port = sock.getsockname()
     #print(f'>_recvUdp {port} locked: {recvLock.locked()}')
@@ -149,7 +149,7 @@ def _recvUdp(sock, socketSize):
     
     while tryMore:
         try:
-            buf, addr = sock.recvfrom(socketSize)
+            buf, addr = sock.recvfrom(SocketSize)
             ReceiverStatistics["records"] += 1
             ReceiverStatistics["bytes"] += len(buf)
             ReceiverStatistics["time"] = time.time()
@@ -255,10 +255,7 @@ def _send_dictio(dictio, sock, hostPort:tuple):
     dictio['pid'] = PID
     _printv(f'send_dictio to {hostPort}: {dictio}')
     encoded = encoderDump(dictio)
-    if UDP:
-        sock.sendto(encoded, hostPort)
-    else:
-        sock.sendall(encoded)
+    sock.sendto(encoded, hostPort)
 
 def _send_cmd(cmd, devParDict:dict, sock, hostPort:tuple, values=None):
     import copy
@@ -275,37 +272,27 @@ def _send_cmd(cmd, devParDict:dict, sock, hostPort:tuple, values=None):
     #_printv('sending cmd: '+str(dictio))
     _send_dictio(dictio, sock, hostPort)
 
-def _receive_dictio(sock, hostPort:tuple):
-  """Receive and decode message from associated socket"""
-  if receive_dictio_lock.locked():
-      _printv('receive_dictio locked')
-  with receive_dictio_lock:
-    if UDP:
-        data, addr = _recvUdp(sock, socketSize)
-        # acknowledge the receiving
-        if Access.dbgDrop_Ack > 0:
-            Access.dbgDrop_Ack -= 1
-        else:
-            try:
-                sock.sendto(b'ACK', hostPort)
-                ReceiverStatistics['acks'] += 1
-            except OSError as e:
-                _printw(f'OSError: {e}')
-            # _printv(f'ACK sent to {hostPort}')
-            #self.sock.sendto(b'ACK', self.hostPort)
-            #_printv('ACK2 sent to '+str(self.hostPort))
+def _receive_socket(sock, ackHostPort:tuple):
+    data, addr = _recvUdp(sock)
+    # acknowledge the receiving
+    if Access.dbgDrop_Ack > 0:
+        Access.dbgDrop_Ack -= 1
     else:
-        #print(f'>recv timeout:{sock.gettimeout()} `{sock}`')
-        if True:#try:
-            data = sock.recv(socketSize)
-            if len(data) == 0:
-                msg = f'Connection closed by server: {sock}'
-                _printe(msg)
-                raise ConnectionError(msg)
-            addr = '?'
-        else:#except Exception as e:
-            _printw('in sock.recv:'+str(e))
-            return {}
+        try:
+            sock.sendto(b'ACK', ackHostPort)
+            ReceiverStatistics['acks'] += 1
+        except OSError as e:
+            _printw(f'OSError: {e}')
+        # _printv(f'ACK sent to {hostPort}')
+        #self.sock.sendto(b'ACK', self.hostPort)
+        #_printv('ACK2 sent to '+str(self.hostPort))
+    return data, addr
+
+def _decode_data(data, addr):
+    """Receive and decode message from associated socket"""
+    #if receive_dictio_lock.locked():
+    #    _printv('receive_dictio locked')
+    #with receive_dictio_lock:
 
     _printv('received %i bytes'%(len(data)))
     #_printv('received %i of '%len(data)+str(type(data))+' from '+str(addr)':')
@@ -370,24 +357,7 @@ class SubscriptionSocket():
         #_printi(f'>subsSocket {hostPort}')
         self.name = f'{hostPort}'
         self.hostPort = tuple(hostPort)
-        if UDP:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        else:
-            self.socket = sock
-        '''
-        else:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            #sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            host,serverport = self.hostPort
-            listeningPort = serverport+37
-            print(f'binding to {listeningPort}')
-            sock.bind(('',listeningPort))# Symbolic name meaning all available interfaces
-            sock.listen()
-            sock.settimeout(1)
-            self.socket, addr = sock.accept()
-            self.socket.settimeout(1)
-            print(f'Subscriber connected by {addr}, hp:{self.hostPort}')
-        '''
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.callback = None# holds the callback for checking
         dispatchMode = 'Thread'
         if dispatchMode == 'Thread':
@@ -399,23 +369,23 @@ class SubscriptionSocket():
             self.thread.start()
 
     def receivingThread(self):
-        _printi(f'>receiving thread started for {self.hostPort}') 
+        _printi(f'>receiving thread started for {self.hostPort}')
         while not self.event.is_set():
             try:
-                _printv(f'>subscription receive_dict {self.socket}')
+                #_printv(f'>subscription receive_dict {self.socket}')
                 try:
-                    dictio = _receive_dictio(self.socket, self.hostPort)
+                    da = _receive_socket(self.socket, self.hostPort)
+                    dictio = _decode_data(*da)
+                    _printv(f'subs received: {dictio}')
                 except TimeoutError as e:
-                    _printw(f'Timeout in subscription thread: {e}')
+                    msg = f'Timeout in subscription thread: {e}'
+                    _printw(msg)
                     continue
-            #except socket.timeout as e:
-            #except RuntimeError as e:
             except Exception as e:
                 msg = f'in subscription thread socket {self.name}: '+str(e)
                 _printw(msg)
-                raise
-                #dictio = {'WARNING':msg}
-                #dictio = None
+                #raise
+                sys.exit()
             self.dispatch(dictio)
         _printi(f'<receiving thread stopped for {self.hostPort}') 
         
@@ -442,16 +412,17 @@ class SubscriptionSocket():
         if self.socket is None:
             return
         _send_cmd('unsubscribe', {'*':'*'}, self.socket, self.hostPort)
-        _printi(f'killing thread of {self.name}')
+        #_printi(f'killing thread of {self.name}')
         self.event.set()
         #self.thread.raise_exception()
-        print(f'shutting down {self.hostPort}')
+        #print(f'shutting down {self.hostPort}')
         try:    self.socket.shutdown(socket.SHUT_RDWR)
         except Exception as e: 
-            _printw(f'Exception in shutting down: {e}')
-        print(f'closing down {self.hostPort}')
+            pass 
+            #_printw(f'Exception in shutting down: {e}')
+        #print(f'closing down {self.hostPort}')
         try:    self.socket.close()
-        except Exception as e: 
+        except Exception as e:
             _printw(f'Exception in closing: {e}')
         self.socket = None
 
@@ -482,17 +453,19 @@ def _add_subscriber(hostPort:tuple, devParDict:dict, sock, callback=testCallback
 
 def unsubscribe_all():
     global subscriptionSockets
-    for hostPort,subsSocket in subscriptionSockets.items():
-        subsSocket.unsubscribe_all()
-    subscriptionSockets = {}
-    _printi('all unsibscribed')
+    if len(subscriptionSockets) > 0:
+        for hostPort,subsSocket in subscriptionSockets.items():
+            subsSocket.unsubscribe_all()
+        subscriptionSockets = {}
+        _printi('All unsubscribed')
 
 pvSockets = {}
 class Channel():
     Perf = False
-    """Provides access to host;port"""#[(dev1,[pars1]),(dev2,[pars2]),...]
+    """Provides access to host;port.
+    If a socket for host;port have been opened before, it will be reused."""
     def __init__(self, hostPort:tuple, devParDict={}, timeout=10):
-        #_printv(f'>Channel {hostPort,devParDict}')
+        _printv(f'>Channel {hostPort,devParDict}')
         self.devParDict = devParDict
         host = hostPort[0]
         if host.lower() in ('','localhost'):
@@ -503,33 +476,16 @@ class Channel():
         self.timeout = timeout
         self.name = f'{self.hostPort}'
         self.recvMax = 1024*1024*4
-        if UDP:
-            #_printv('Try to reuse existing socket')
-            self.sock = pvSockets.get(self.hostPort)
-            if self.sock is None:
-                # _printv('There is no sockets for thay host, create a new socket')
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                #self.sock.bind((self.lHost,self.lPort)) # bind is not necessary for client, an automatic bind() will take place using system assigned local port number
-                self.sock.settimeout(timeout)
-                pvSockets[self.hostPort] = self.sock
-        else:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(self.timeout)
-            try:
-                self.sock.connect(self.hostPort)
-            except Exception as e:
-                _printe('in sock.connect:'+str(e))
-                sys.exit()
-        '''
-        else:
-            self.sock = pvSockets.get(self.hostPort)
-            if self.sock is None:
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                #self.sock.bind((self.lHost,self.lPort)) # bind is not necessary for client, an automatic bind() will take place using system assigned local port number
-                self.sock.connect(self.hostPort)
-                self.sock.settimeout(timeout)
-                pvSockets[self.hostPort] = self.sock
-        '''
+        _printv('Try to reuse existing socket')
+        self.sock = pvSockets.get(self.hostPort)
+        if self.sock is None:
+            print('There is no sockets for that host, create a new socket')
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.settimeout(timeout)
+            #self.sock.setblocking(False)
+            #events = selectors.EVENT_READ | selectors.EVENT_WRITE
+            #Sel.register(sock, events, data=message)
+            pvSockets[self.hostPort] = self.sock
         _printv(f'<Channel {hostPort,devParDict}: {self.sock}')
 
     def _transaction(self, cmd, value=None):
@@ -538,9 +494,8 @@ class Channel():
             ts = _timer()
         _send_cmd(cmd, self.devParDict, self.sock, self.hostPort, value)
         #r = True if cmd == 'set' else _receive_dictio(self.sock, self.hostPort)
-        r = _receive_dictio(self.sock, self.hostPort)
-        if not UDP:
-            self.sock.close()
+        da = _receive_socket(self.sock, self.hostPort)
+        r = _decode_data(*da)
         if Channel.Perf: print('transaction time: %.5f'%(_timer()-ts))
         return r
     
@@ -653,6 +608,7 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
         _add_subscriber(channel.hostPort, channel.devParDict, channel.sock, callback)
 
     def unsubscribe(self):
+        _printi(f'>PV.insubscribe: {self.channels[:1]}')
         unsubscribe_all()
 
 #``````````````````Universal Access```````````````````````````````````````````
@@ -693,6 +649,8 @@ class Access():
         pvs.subscribe(callback)
 
     def unsubscribe():
-        """Unsubscribe all paramters"""
-        unsubscribe_all()
+        """Unsubscribe all parameters"""
+        if len(subscriptionSockets) > 0:
+            _printi('>Access.unsubscribe()')
+            unsubscribe_all()
 #,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
