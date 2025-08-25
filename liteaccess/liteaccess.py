@@ -1,6 +1,6 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.3.0 2024-07-19'#receive_dictio split in two parts
+__version__ = '3.4.0 2025-08-15'# Supported device name resolution through liteCNSServer
 #TODO: Right now the nonblocked _receive_socket is called from subscribtion thread and from channel.transaction(). Are they thread safe? 
 #TODO: Recover from timeout. It is tricky. The timeout could be due to slow or stopped server, in that case do not recover.
 
@@ -21,7 +21,7 @@ encoderDump = encoder.dumps
 encoderLoad = encoder.loads
 
 #````````````````````````````Globals``````````````````````````````````````````
-Port = 9700
+LiteCNSdev = 'localhost;9700:liteCNS'# Explicit liteName of the local CNS device
 PrefixLength = 4
 SocketSize = 1024*64 # max size of UDP transfer
 Dev,Par = 0,1
@@ -84,48 +84,43 @@ def ip_address():
         for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]
 
 CNSMap = {}# local map of cnsName to host:port
-def _hostPort(cnsNameDev:tuple):
-    """Return host;port of the cnsName,Dev try it first from already 
-    registered records, or from the name service"""
-    global CNSMap
-    if len(cnsNameDev) == 1:
-        msg = f'Device name should be a tuple (dev,name), got: {cnsNameDev}'
-        #_printe(msg)
-        raise NameError(msg)
-    cnsName,dev = cnsNameDev
-    if isinstance(cnsName,list):
-        cnsName = tuple(cnsName)
-    try:  
-        hp,dev = CNSMap[cnsName]# check if cnsName is in local map
-    except  KeyError:
-        from . import liteCNS
-        _printi(f'cnsName {cnsName} not in local map: {CNSMap}')
-        try:
-            hp = liteCNS.hostPort(cnsName)
-        #except NameError:
-        except Exception as e:
-            msg = (f'The host name {cnsName} is not in liteCNS: {e}\n'
-                f"Trying to use it as is: '{cnsName}'")
-            #raise   NameError(msg)
-            _printw(msg)
-            hp = cnsName
-        # register externally resolved cnsName in local map
-        hp = hp.split(';')
-        hp = tuple(hp) if len(hp)==2 else (hp[0],Port)            
-        #_printi('cnsName %s is locally registered as '%cnsName+str((hp,dev)))
-        CNSMap[cnsName] = hp,dev
-        _printi(f'Assuming host,port: {hp}')
-    except ValueError:
-        msg = f'Device name wrong: {cnsNameDev}, should be of the form: host:dev'
-        #_printe(msg)
-        raise NameError(msg)
-    h,p = hp
+def get_liteNameTuple(cnsNameDev:tuple):
+    """Return tuple (hostPort,dev) of the (cnsName,Dev), try it first from already 
+    registered records."""
+    if not isinstance(cnsNameDev,tuple):
+        raise NameError(f'cnsName expected to be tuple: {cnsNameDev}')
+    hpStr, devName = CNSMap.get(cnsNameDev,(None,None))
+    if hpStr is None:
+        #_printi(f'cnsName {cnsNameDev} not in local map: {CNSMap}')
+        if len(cnsNameDev) == 1:# it is not in form (host,dev) but (dev,)
+            cnsDev = cnsNameDev[0]
+            # Check if it is registered in liteCNS
+            if PVs.CNSPV is None:
+                PVs.CNSPV = PVs((LiteCNSdev,'query'))
+            try:
+                reply = PVs.CNSPV.set(cnsDev)
+            except TimeoutError:
+                raise NameError(f'name server {LiteCNSdev} is not running')
+            val = reply['query']['value']
+            _printv(f'reply: {val}')
+            if isinstance(val,str):
+                raise NameError(f'Could nor resolve name with liteCNS: {val}')
+            cnsNameDevAsString = val[0]
+            cnsNameDev = tuple(cnsNameDevAsString.split(':',1))
+
+        # register it in local map
+        hpStr,devName = cnsNameDev
+        _printv(f'cnsName is locally registered as {hpStr,devName}')
+        CNSMap[cnsNameDev] = hpStr,devName
+
+    _printv(f'Assuming host,port: {hpStr}')
+
+    host,port = hpStr.split(';')
     try:
-        h = socket.gethostbyname(h)
+        host = socket.gethostbyname(host)
     except:
-        _printe(f'Could not resolve host name {h}')
-        sys.exit(1)
-    return h,p
+        raise NameError(f'Could not resolve host name: {host}')
+    return hpStr,devName
 
 retransmitInProgress = None
 def _recvUdp(sock):
@@ -467,19 +462,17 @@ class Channel():
     def __init__(self, hostPort:tuple, devParDict={}, timeout=10):
         _printv(f'>Channel {hostPort,devParDict}')
         self.devParDict = devParDict
-        host = hostPort[0]
-        if host.lower() in ('','localhost'):
-            host = ip_address()
-        try:    port = int(hostPort[1])
-        except: port = 9700
-        self.hostPort = host,port
+        host,portStr = hostPort
+        self.hostPort = host,int(portStr)
         self.timeout = timeout
         self.name = f'{self.hostPort}'
         self.recvMax = 1024*1024*4
         _printv('Try to reuse existing socket')
         self.sock = pvSockets.get(self.hostPort)
-        if self.sock is None:
-            print('There is no sockets for that host, create a new socket')
+        if self.sock is not None:
+            _printv('Using existing socket')
+        else:
+            _printv('There is no sockets for that host, create a new socket')
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.settimeout(timeout)
             #self.sock.setblocking(False)
@@ -499,11 +492,13 @@ class Channel():
         if Channel.Perf: print('transaction time: %.5f'%(_timer()-ts))
         return r
     
+
 class PVs(object): #inheritance from object is needed in python2 for properties to work
     """Class, representing multiple data access objects."""
     Dbg = 0
     subscriptionsCancelled = True
     #Cache = {}
+    CNSPV = None
 
     def __init__(self, *ldoPars):
         # unpack arguments to hosRequest map
@@ -528,20 +523,15 @@ class PVs(object): #inheritance from object is needed in python2 for properties 
             except: pass
             ldo = tuple(ldo)
             #if isinstance(pars,str): pars = [[pars]]
-            # ldo is in form: (hostName,devName)
-            ldoHost = _hostPort(ldo)
-            cnsNameDev = NSDelimiter.join(ldo)
-            if ldoHost not in self.channelMap:
-                self.channelMap[ldoHost] = {cnsNameDev:pars}
-                #_printv(f'created self.channelMap[{ldoHost,self.channelMap[ldoHost]}')
+            # ldo has form: (hostName,devName)
+            hostPort_Dev = get_liteNameTuple(ldo)
+            cnsNameDev = NSDelimiter.join(hostPort_Dev)
+            hostPort = tuple(hostPort_Dev[0].split(';'))
+            if hostPort not in self.channelMap:
+                self.channelMap[hostPort] = {cnsNameDev:pars}
             else:
-                if False:#try:
-                    _printv(f'try to append old cnsNameDev {ldoHost,cnsNameDev} with {pars[0]}')
-                    self.channelMap[ldoHost][cnsNameDev][0].append(pars[0])
-                else:#except:
-                    _printv(f'creating new cnsNameDev {ldoHost,cnsNameDev} with {pars[0]}')
-                    self.channelMap[ldoHost][cnsNameDev] = pars
-                print(f'updated self.channelMap[{ldoHost}: {self.channelMap[ldoHost]}')
+                self.channelMap[hostPort][cnsNameDev] = pars
+                print(f'updated self.channelMap[{hostPort}: {self.channelMap[hostPort]}')
         channelList = list(self.channelMap.items())
         _printv(f',,,,,,,,,,,,,,,,,,,channelList constructed: {channelList}')
         self.channels = [Channel(*i) for i in channelList]
