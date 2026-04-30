@@ -1,7 +1,7 @@
 """Module for accessing multiple Process Variables, served by a liteServer.
 """
-__version__ = '3.4.0 2025-08-15'# Supported device name resolution through liteCNSServer
-#TODO: Right now the nonblocked _receive_socket is called from subscribtion thread and from channel.transaction(). Are they thread safe? 
+__version__ = '3.4.1 2026-04-29'# _recvUdp return bytes. This causes error in python3.12.
+#TODO: Right now the nonblocked _receive_socket is called from subscription thread and from channel.transaction(). Are they thread safe? 
 #TODO: Recover from timeout. It is tricky. The timeout could be due to slow or stopped server, in that case do not recover.
 
 import sys, time, socket
@@ -229,7 +229,7 @@ def _recvUdp(sock):
         return [],0
         #return ('WARNING: '+msg).encode(), addr
 
-    data = bytearray()
+    data = bytes()
     sortedKeys = sorted(chunks[sock])
     for offset,size in sortedKeys:
         # _printv('assembled offset,size '+str((offset,size)))
