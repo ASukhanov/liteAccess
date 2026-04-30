@@ -68,21 +68,17 @@ ldo.unsubscribe()# cancel the subscruption
 #,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 #``````````````````Observations````````````````````````````````````````````````
 Timing of Access.get using ipython on localhost.
-    from liteserver import liteAccess as LA
-    Host='localhost'
+In separate terminal start liteScaler: `python -m liteserver.device.liteScaler -i localhost`
+Then execute following commands in ipython:
+    import liteaccess as LA
+    Host='localhost;9700'
     LAdev1   = Host+':dev1'
-    %timeit image = LA.Access.get((LAdev1,['image']))
+    %timeit image = LA.Access.get((LAdev1,'image'))
     145 µs ± 1.95 µs per loop (mean ± std. dev. of 7 runs, 10000 loops each)
     for version 3.2.0:
     317 µs ± 5.53 µs per loop (mean ± std. dev. of 7 runs, 1,000 loops each)
-    image[(LAdev1,'image')]['value'].shape
-    (120, 160, 3)
-Retrieving time of 57600 values (120*160*3) is 145 µs,
-which corresponds to 400 mValues/s
-
-Retrieving time of 57600 values (120*160*3) 220 µs,
-which corresponds to 260 MValues/s (on entry-level workstation). 
-It was 400 MValues/s on top-level workstation.
+Retrieving time of 57600 values (120*160*3) on top-level workstation is 145 µs,
+which corresponds to 400 MValues/s
 Note: Msgpack was 4% faster.
 #``````````````````Tips````````````````````````````````````````````````````````
 # To enable debugging: LA.PVs.Dbg = True
